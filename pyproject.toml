@@ -18,5 +18,5 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = ""
-"Bug Tracker" = ""
+"Homepage" = "https://github.com/mroget/pgmc"
+"Bug Tracker" = "https://github.com/mroget/pgmc/issues"
