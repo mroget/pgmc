@@ -67,6 +67,19 @@ class KPGMC:
         default = f_(np.array(list(self.class_weight.values())))
         res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
         self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
+
+    def _optimize_class_weight(self):
+        self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+        V = np.array([[np.dot(np.dot(self.Kernel_Matrix[i].transpose(),self.POVM[k]),self.Kernel_Matrix[i]) for k in range(len(self.K))] for i in range(len(self.X))],dtype=float)
+        def f_(x):
+            P = copy.deepcopy(V)
+            for i in range(len(x)):
+                P[:,i] *= x[i]
+            y_pred = np.array([np.argmax(p) for p in P],dtype=float)
+            return 1.- sk.metrics.f1_score(self.y,y_pred,average="binary" if len(self.K)==2 else "micro")
+        default = f_(np.array(list(self.class_weight.values())))
+        res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
+        self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
         
 
     def fit(self, X, y):
