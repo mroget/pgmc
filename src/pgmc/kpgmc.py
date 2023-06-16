@@ -2,10 +2,11 @@ import numpy as np
 import scipy as sp
 import copy
 import sklearn as sk
+from sklearn.base import ClassifierMixin, BaseEstimator
 
 from pgmc import embeddings
 
-class KPGMC:
+class KPGMC(BaseEstimator, ClassifierMixin):
     def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameters=None):
         self.class_weight = class_weight
         self.kernel_parameters = kernel_parameters
@@ -17,18 +18,15 @@ class KPGMC:
 
         if embedding==None:
             self.embedding = embeddings.normalize
-        elif embedding.lower() == "normal":
+        elif type(embedding) == str and embedding.lower() == "normal":
             self.embedding = embeddings.normalize
-        elif embedding.lower() == "stereo":
+        elif type(embedding) == str and embedding.lower() == "stereo":
             self.embedding = embeddings.stereo
-        elif embedding.lower() == "orthogonal":
+        elif type(embedding) == str and embedding.lower() == "orthogonal":
             self.embedding = embeddings.orthogonalize
         else:
             self.embedding = embedding
 
-        self.POVM = []
-        self.K = []
-        self.X = []
 
     def _adjust_class_weight(self):
         # Adjust class weights
@@ -56,20 +54,6 @@ class KPGMC:
 
     def _optimize_class_weight(self):
         self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
-        w = np.array([0.]*len(self.K),dtype=float)
-        for i in range(len(self.y)):
-            w[self.y[i]] += np.dot(np.dot(self.Kernel_Matrix[i].transpose(),self.POVM[self.y[i]]),self.Kernel_Matrix[i])
-        for i in range(len(self.K)):
-            w[i] /= list(self.y).count(self.K[i])
-        def f_(x):
-            score = np.dot(x,w)
-            return 1.-score
-        default = f_(np.array(list(self.class_weight.values())))
-        res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
-        self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
-
-    def _optimize_class_weight(self):
-        self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
         V = np.array([[np.dot(np.dot(self.Kernel_Matrix[i].transpose(),self.POVM[k]),self.Kernel_Matrix[i]) for k in range(len(self.K))] for i in range(len(self.X))],dtype=float)
         def f_(x):
             P = copy.deepcopy(V)
@@ -91,16 +75,22 @@ class KPGMC:
         self._compute_matrices_pi()
         self._adjust_class_weight()
         
-        
-
-    def predict_one(self, w):
+    def predict_proba_one(self,w):
         W = np.array([self.kernel(x,w) for x in self.X],dtype=float)
         Wt = np.transpose(W)
         p = [np.dot(Wt,self.class_weight[self.K[i]]*np.dot(self.POVM[i],W)) for i in range(len(self.K))]
-        i = np.argmax(p)
+        return np.array(p,dtype=float)
+
+    def predict_one(self, w):
+        i = np.argmax(self.predict_proba_one(w))
         return self.K[i]
 
     def predict(self, X):
         return np.array(list(map(self.predict_one,np.array(list(map(self.embedding,X))))),dtype=float)
+
+
+    def predict_proba(self, X):
+        return np.array(list(map(self.predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
+
 
 
