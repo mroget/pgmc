@@ -42,6 +42,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             self.class_weight = {k:1. for k in self.K}
 
     def _compute_matrices_pi(self):
+        # Compute the matrix used for classification
         self.Kernel_Matrix = np.array([[0. for j in range(len(self.X))] for i in range(len(self.X))],dtype=float)
         for i in range(len(self.X)):
             for j in range(i,len(self.X)):
@@ -53,6 +54,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             self.POVM.append(np.real(np.dot(Ginv,np.dot(np.diag([1. if i==k else 0. for i in self.y]),Ginv))))
 
     def _optimize_class_weight(self):
+        # Optimization of the weights
         self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
         V = np.array([[np.dot(np.dot(self.Kernel_Matrix[i].transpose(),self.POVM[k]),self.Kernel_Matrix[i]) for k in range(len(self.K))] for i in range(len(self.X))],dtype=float)
         def f_(x):
@@ -87,8 +89,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         return np.array(list(map(self.predict_one,np.array(list(map(self.embedding,X))))),dtype=float)
-
-
+        
     def predict_proba(self, X):
         return np.array(list(map(self.predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
 
