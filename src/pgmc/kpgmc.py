@@ -2,14 +2,17 @@ import numpy as np
 import scipy as sp
 import copy
 import sklearn as sk
+import torch
 from sklearn.base import ClassifierMixin, BaseEstimator
 
 from pgmc import embeddings
 
+
 class KPGMC(BaseEstimator, ClassifierMixin):
-    def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameters=None):
+    def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameters=None, device="cpu"):
         self.class_weight = class_weight
         self.kernel_parameters = kernel_parameters
+        self.device = device
 
         if kernel==None:
             self.kernel = np.dot
@@ -43,12 +46,12 @@ class KPGMC(BaseEstimator, ClassifierMixin):
 
     def _compute_matrices_pi(self):
         # Compute the matrix used for classification
-        self.Kernel_Matrix = np.array([[0. for j in range(len(self.X))] for i in range(len(self.X))],dtype=float)
+        self.Kernel_Matrix = np.zeros((len(self.X),len(self.X)),dtype=float)
         for i in range(len(self.X)):
             for j in range(i,len(self.X)):
                 self.Kernel_Matrix[i,j] = self.kernel(self.X[i],self.X[j])
                 self.Kernel_Matrix[j,i] = self.Kernel_Matrix[i,j]
-        Ginv = sp.linalg.sqrtm(np.linalg.pinv(self.Kernel_Matrix))
+        Ginv = sp.linalg.sqrtm(torch.linalg.pinv(torch.tensor(self.Kernel_Matrix,device=self.device)))
         self.POVM = []                                       
         for k in self.K:
             self.POVM.append(np.real(np.dot(Ginv,np.dot(np.diag([1. if i==k else 0. for i in self.y]),Ginv))))
@@ -92,6 +95,3 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         
     def predict_proba(self, X):
         return np.array(list(map(self.predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
-
-
-
