@@ -9,7 +9,27 @@ from pgmc import embeddings
 
 
 class KPGMC(BaseEstimator, ClassifierMixin):
+    """ Class For the k-PGMC algorithm
+    This class implement the k-PGMC algorithm including classe's weights optimization and kernel/embedding specification.
+    The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
+    This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
+    """
     def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameters=None, device="cpu"):
+        """ Initialisation of a new KPGMC
+        Parameters:
+            - kernel (function, default=None) : The kernel used to compute similarity between vectors (default is scalar product). A kernel with high values might cause the svd to diverge.
+            - embedding (str or function, default=None) : The embedding method (default is normalization). 
+                + "normal" : Normalization of the vectors.
+                + "stereo" : Inverse stereoscopic embedding.
+                + "orthogonal" : Vectors are normalized, then a new features of value -1 is added, then the vectors are normalized again.
+            - class_weight (dict or str, default None) : The method to choose the classes's weights. By default, all classes have weight 1. A dictionnary {class : weight} is accepted.
+                + "auto" : Raisonnable weights are chosen according to some formula. Fast but not optimal.
+                + "optimize" : The weight are optimized on the training dataset (for faster computation) using Nelder-Mead method.
+            - device (str, default="cpu") : the device on which pytorch run the pinv. For gpu computation, specify "cuda" instead.  
+        Return:
+            A KPGMC classifier.
+
+        """
         self.class_weight = class_weight
         self.kernel_parameters = kernel_parameters
         self.device = device
@@ -35,8 +55,6 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         # Adjust class weights
         if type(self.class_weight) == dict:
             pass
-        elif type(self.class_weight) == list:
-            self.class_weight = {self.K[i] : self.class_weight[i] for i in range(len(self.K))}
         elif self.class_weight == "auto":
             self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
         elif self.class_weight == "optimize":
@@ -72,6 +90,13 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         
 
     def fit(self, X, y):
+        """ Fit classifier according to dataset X,y
+        Parameters:
+            - X (numpy 2d array shape=(n,d)) : training vectors
+            - y (numpy 1d array shape=(n,)) : training classes
+        Return:
+            Nothing
+        """
         assert(len(X)==len(y))
         self.K = list(set(y)) # Classes
         self.X = np.array(list(map(self.embedding,X)))
@@ -80,18 +105,32 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         self._compute_matrices_pi()
         self._adjust_class_weight()
         
-    def predict_proba_one(self,w):
+    def _predict_proba_one(self,w):
         W = np.array([self.kernel(x,w) for x in self.X],dtype=float)
         Wt = np.transpose(W)
         p = [np.dot(Wt,self.class_weight[self.K[i]]*np.dot(self.POVM[i],W)) for i in range(len(self.K))]
         return np.array(p,dtype=float)
 
-    def predict_one(self, w):
+    def _predict_one(self, w):
         i = np.argmax(self.predict_proba_one(w))
         return self.K[i]
 
     def predict(self, X):
-        return np.array(list(map(self.predict_one,np.array(list(map(self.embedding,X))))),dtype=float)
+        """ Predict classes of sample X
+        Parameter:
+            - X (numpy 2d array shape=(n,d)) : sample to classify
+        Return:
+            - y (numpy 1d array shape=(n,)) : classes predicted by the model
+
+        """
+        return np.array(list(map(self._predict_one,np.array(list(map(self.embedding,X))))),dtype=float)
         
     def predict_proba(self, X):
-        return np.array(list(map(self.predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
+        """ Predict class probablities of sample X
+        Parameter:
+            - X (numpy 2d array shape=(n,d)) : sample to classify
+        Return:
+            - Py (numpy 2d array sape=(n,d)) : Probability for each point of X to be in each class according to the model.
+
+        """
+        return np.array(list(map(self._predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
