@@ -112,7 +112,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         return np.array(p,dtype=float)
 
     def _predict_one(self, w):
-        i = np.argmax(self.predict_proba_one(w))
+        i = np.argmax(self._predict_proba_one(w))
         return self.K[i]
 
     def predict(self, X):
