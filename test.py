@@ -24,12 +24,48 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn import datasets
 from sklearn.multiclass import OneVsOneClassifier,OneVsRestClassifier
 
+from sklearn.model_selection import RandomizedSearchCV
+
 def get_mnist(features=5, nb_classes=2, path="mnist.pkl"):
     """
     Load MNIST, eliminate some classes and apply pca.
     """
     pca = PCA(n_components=features)
     (X,y) = pickle.load(open(path,"rb"))
+    X = np.array([X[i] for i in range(len(X)) if y[i] in list(range(nb_classes))])
+    y = np.array([y[i] for i in range(len(y)) if y[i] in list(range(nb_classes))])
+    if len(X[0]) > features:
+        X = pca.fit_transform(X)
+    return X,y
+
+def load_imagenet(features=12288, nb_classes=200, size=10000):
+    from datasets import load_dataset
+    ds = load_dataset("zh-plus/tiny-imagenet").with_format("np")
+    X = []
+    y = []
+
+    l = list(ds["valid"])
+    K = set([i["label"] for i in l])
+    classes = {k:[] for k in K}
+
+    for img in tqdm(l):
+        if len(np.reshape(img["image"],(-1,))) == 12288:
+            classes[img["label"]].append(np.reshape(img["image"],(-1,)))
+
+    for i in range(len(list(classes.values())[0])):
+        for k in classes:
+            if i >= len(classes[k]):
+                break
+            X.append(classes[k][i])
+            y.append(k)
+            if len(X)>=size:
+                break
+        if len(X)>=size:
+                break
+    X = np.array(X)
+    y = np.array(y)
+    
+    pca = PCA(n_components=features)
     X = np.array([X[i] for i in range(len(X)) if y[i] in list(range(nb_classes))])
     y = np.array([y[i] for i in range(len(y)) if y[i] in list(range(nb_classes))])
     if len(X[0]) > features:
@@ -117,23 +153,39 @@ class Task:
         return pd.DataFrame(res,columns=["size","features","acc","precision","recall","ba","mse","f1","time","clf","data"])
 
 @jit
-def rbf_kernel(x,y):
-	return np.exp(-np.linalg.norm(x-y)**2)
-
-rbf_kernel(np.array([1.,1.]), np.array([1.,1.]))
+def rbf_kernel(x,y,c):
+    return np.exp(-c*np.linalg.norm(x-y)**2)
 
 
-task = Task(repeat=10) # 5-fold crossvalidation
+#rbf_kernel(np.array([1.,1.]), np.array([1.,1.]))
+
+
+task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-X,y = get_mnist(40,10,path="mnist1d.pkl")
+#X,y = get_mnist(40,10,path="mnist1d.pkl")
 #X,y = get_mnist(40,10,path="../mnist.pkl")
-X,y = X[::7],y[::7]
-task.add_data("MNIST-1D 0.5|0.5",X,y)
+#X,y = imbalance(*get_mnist(40,2,path="../mnist1d.pkl"),0.1) # i features 2 classes
+#task.add_data("MNIST-1D 0.9|0.1",X,y)
+#X,y = X[::7],y[::7]
+#task.add_data("MNIST-1D 0.5|0.5",X,y)
+
+X,y = load_imagenet(features=1000, nb_classes=200, size=2000)
+"""
+task.add_data("Mininet",X,y)
 
 ## CLASSIFIERS
-task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel,class_weight="auto"))
+task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=[0.2], class_weight="auto", device="cpu"))
+task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight="auto", device="cpu"))
 task.add_clf("SVM rbf",lambda :SVC())
 data = task.run()
 
-print(data.groupby(["data","clf"]).mean(numeric_only=False))
+print(data.groupby(["data","clf"]).mean(numeric_only=False))"""
+
+param_distributions = {"kernel_parameter": np.linspace(0.01,1.,10)}
+
+clf = kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=1., class_weight="auto", device="cpu")
+
+search = RandomizedSearchCV(clf, param_distributions).fit(X, y)
+
+print(search.best_params_)

@@ -5,46 +5,26 @@ import sklearn as sk
 import torch
 from sklearn.base import ClassifierMixin, BaseEstimator
 
-import time
-
 from numba import jit
-import numba
 
 from pgmc import embeddings
 
 @jit
-def kernel_mat(kernel, X):
+def dot(x,y):
+    return np.dot(x,y)
+
+
+def kernel_mat(kernel, X, kernel_parameter):
     Kernel_Matrix = np.zeros((len(X),len(X)),dtype=float)
     for i in range(len(X)):
         for j in range(i,len(X)):
-            Kernel_Matrix[i,j] = kernel(X[i],X[j])
+            if kernel_parameter == None:
+                Kernel_Matrix[i,j] = kernel(X[i],X[j])
+            else:
+                Kernel_Matrix[i,j] = kernel(X[i],X[j],kernel_parameter)
             Kernel_Matrix[j,i] = Kernel_Matrix[i,j]
     return Kernel_Matrix
 
-@jit
-def foo(x,y):
-    return np.dot(x,y)
-
-kernel_mat(foo, np.array([[1.]]))
-
-
-@jit
-def _predict_proba_one(K, X, POVM, class_weight, kernel, w):
-    W = np.array([kernel(x,w) for x in X])
-    Wt = np.transpose(W)
-    p = [np.dot(Wt,class_weight[i]*np.dot(POVM[i],W)) for i in range(len(K))]
-    return np.array(p)
-
-
-def diag(x):
-    return [[x[i] if i==j else 0. for j in range(len(x))] for i in range(len(x))]
-
-
-def get_POVM(K,y,Ginv):
-    POVM = []                                       
-    for k in K:
-        POVM.append(np.real(np.dot(Ginv,np.dot(np.diag([1. if i==k else 0. for i in y]),Ginv))))
-    return POVM
 
 
 class KPGMC(BaseEstimator, ClassifierMixin):
@@ -53,7 +33,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
     The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
     This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
     """
-    def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameters=None, device="cpu"):
+    def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameter=None, device="cpu"):
         """ Initialisation of a new KPGMC
         Parameters:
             - kernel (function, default=None) : The kernel used to compute similarity between vectors (default is scalar product). A kernel with high values might cause the svd to diverge.
@@ -70,11 +50,11 @@ class KPGMC(BaseEstimator, ClassifierMixin):
 
         """
         self.class_weight = class_weight
-        self.kernel_parameters = kernel_parameters
         self.device = device
+        self.kernel_parameter = kernel_parameter
 
         if kernel==None:
-            self.kernel = np.dot
+            self.kernel = dot
         else:
             self.kernel = kernel
 
@@ -89,6 +69,8 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         else:
             self.embedding = embedding
 
+        kernel_mat(self.kernel, np.array([[1.]]), self.kernel_parameter) # For JIT compilation
+
 
     def _adjust_class_weight(self):
         # Adjust class weights
@@ -101,6 +83,8 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         else:
             self.class_weight = {k:1. for k in self.K}
 
+        self.T = torch.tensor(np.array([self.class_weight[self.K[i]] * self.POVM[i] for i in range(len(self.K))]),device=self.device)
+
     def _compute_matrices_pi(self):
         # Compute the matrix used for classification
         """
@@ -110,17 +94,12 @@ class KPGMC(BaseEstimator, ClassifierMixin):
                 self.Kernel_Matrix[i,j] = self.kernel(self.X[i],self.X[j])
                 self.Kernel_Matrix[j,i] = self.Kernel_Matrix[i,j]
         """
-        t = time.time()
-        self.Kernel_Matrix = kernel_mat(self.kernel, self.X)
+        self.Kernel_Matrix = kernel_mat(self.kernel, self.X, self.kernel_parameter)
         Ginv = sp.linalg.sqrtm(torch.linalg.pinv(torch.tensor(self.Kernel_Matrix,device=self.device)))
-        #Ginv = sp.linalg.sqrtm(np.linalg.pinv(self.Kernel_Matrix))
         
         self.POVM = []                                       
         for k in self.K:
             self.POVM.append(np.real(np.dot(Ginv,np.dot(np.diag([1. if i==k else 0. for i in self.y]),Ginv))))
-        
-        self.POVM = torch.tensor(np.array(self.POVM),device=self.device)
-        print("Elapsed:",time.time()-t)
 
     def _optimize_class_weight(self):
         # Optimization of the weights
@@ -135,7 +114,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         default = f_(np.array(list(self.class_weight.values())))
         res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
         self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
-        print(res.val,default)
+        
         
 
     def fit(self, X, y):
@@ -155,16 +134,15 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         self._adjust_class_weight()
         
     def _predict_proba_one(self,w):
-        #W = np.array([self.kernel(x,w) for x in self.X],dtype=float)
-        #Wt = np.transpose(W)
-        #p = [np.dot(Wt,self.class_weight[self.K[i]]*np.dot(self.POVM[i],W)) for i in range(len(self.K))]
-        W = torch.tensor(np.array([self.kernel(x,w) for x in self.X],dtype=float),device=self.device)
-        p = torch.tensordot(W,torch.tensordot(self.POVM,W,dims=([2], [0])),dims=([0], [1]))
+        if self.kernel_parameter == None:
+            W = torch.tensor(np.array([self.kernel(x,w) for x in self.X],dtype=float),device=self.device)
+        else:
+            W = torch.tensor(np.array([self.kernel(x,w,self.kernel_parameter) for x in self.X],dtype=float),device=self.device)
+        p = torch.tensordot(W,torch.tensordot(self.T,W,dims=([2], [0])),dims=([0], [1]))
         return np.array(p,dtype=float)
 
     def _predict_one(self, w):
         i = np.argmax(self._predict_proba_one(w))
-        #i = np.argmax(_predict_proba_one(self.K, self.X, self.POVM, [self.class_weight[self.K[i]] for i in self.K], self.kernel, w))
         return self.K[i]
 
     def predict(self, X):
