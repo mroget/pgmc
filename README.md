@@ -14,7 +14,7 @@ pip install dist/*.whl
 ### PIP Testing installation
 For now, the package is on pip test (an instance of pip used to test packages). To install it from pip run 
 ```
-pip install -i https://test.pypi.org/simple/ pgmc
+pip install -i https://test.pypi.org/simple/pgmc
 ```
 
 ## Use
