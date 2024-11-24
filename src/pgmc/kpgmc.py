@@ -8,7 +8,7 @@ from sklearn.base import ClassifierMixin, BaseEstimator
 from numba import jit
 
 #from pgmc import embeddings
-import embeddings
+import src.pgmc.embeddings as embeddings
 
 @jit
 def dot(x,y):
