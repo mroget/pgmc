@@ -163,29 +163,30 @@ def rbf_kernel(x,y,c):
 task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-#X,y = get_mnist(40,10,path="mnist1d.pkl")
+X,y = get_mnist(40,10,path="mnist1d.pkl")
 #X,y = get_mnist(40,10,path="../mnist.pkl")
 #X,y = imbalance(*get_mnist(40,2,path="../mnist1d.pkl"),0.1) # i features 2 classes
 #task.add_data("MNIST-1D 0.9|0.1",X,y)
-#X,y = X[::7],y[::7]
-#task.add_data("MNIST-1D 0.5|0.5",X,y)
+X,y = X[::7],y[::7]
+task.add_data("MNIST-1D 0.5|0.5",X,y)
 
-X,y = load_imagenet(features=1000, nb_classes=200, size=2000)
-"""
-task.add_data("Mininet",X,y)
+#X,y = load_imagenet(features=100, nb_classes=200, size=1000)
+
+#task.add_data("Mininet",X,y)
 
 ## CLASSIFIERS
-task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=[0.2], class_weight="auto", device="cpu"))
+task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight="auto", device="cpu"))
 task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight="auto", device="cpu"))
 task.add_clf("SVM rbf",lambda :SVC())
 data = task.run()
 
-print(data.groupby(["data","clf"]).mean(numeric_only=False))"""
+print(data.groupby(["data","clf"]).mean(numeric_only=False))
+"""
 
 param_distributions = {"kernel_parameter": np.linspace(0.01,1.,10)}
 
 clf = kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=1., class_weight="auto", device="cpu")
 
-search = RandomizedSearchCV(clf, param_distributions).fit(X, y)
+search = RandomizedSearchCV(clf, param_distributions,n_iter=10).fit(X, y)
 
-print(search.best_params_)
+print(search.best_params_)"""
