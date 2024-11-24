@@ -96,7 +96,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
                 self.Kernel_Matrix[j,i] = self.Kernel_Matrix[i,j]
         """
         self.Kernel_Matrix = kernel_mat(self.kernel, self.X, self.kernel_parameter)
-        Ginv = sp.linalg.sqrtm(torch.linalg.pinv(torch.tensor(self.Kernel_Matrix,device=self.device)))
+        Ginv = sp.linalg.sqrtm(torch.linalg.pinv(torch.tensor(self.Kernel_Matrix,device=self.device)).cpu())
         
         self.POVM = []                                       
         for k in self.K:
@@ -140,7 +140,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         else:
             W = torch.tensor(np.array([self.kernel(x,w,self.kernel_parameter) for x in self.X],dtype=float),device=self.device)
         p = torch.tensordot(W,torch.tensordot(self.T,W,dims=([2], [0])),dims=([0], [1]))
-        return np.array(p,dtype=float)
+        return np.array(p.cpu(),dtype=float)
 
     def _predict_one(self, w):
         i = np.argmax(self._predict_proba_one(w))

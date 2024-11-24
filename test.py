@@ -163,16 +163,16 @@ def rbf_kernel(x,y,c):
 task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-X,y = get_mnist(40,10,path="mnist1d.pkl")
+#X,y = get_mnist(40,10,path="mnist1d.pkl")
 #X,y = get_mnist(40,10,path="../mnist.pkl")
 #X,y = imbalance(*get_mnist(40,2,path="../mnist1d.pkl"),0.1) # i features 2 classes
 #task.add_data("MNIST-1D 0.9|0.1",X,y)
-X,y = X[::7],y[::7]
-task.add_data("MNIST-1D 0.5|0.5",X,y)
+#X,y = X[::7],y[::7]
+#task.add_data("MNIST-1D 0.5|0.5",X,y)
 
-#X,y = load_imagenet(features=100, nb_classes=200, size=1000)
+X,y = load_imagenet(features=100, nb_classes=200, size=1000)
 
-#task.add_data("Mininet",X,y)
+task.add_data("Mininet",X,y)
 
 ## CLASSIFIERS
 task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight="auto", device="cpu"))
