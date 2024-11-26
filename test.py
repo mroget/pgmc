@@ -44,7 +44,8 @@ def load_imagenet(features=12288, nb_classes=200, size=10000):
     X = []
     y = []
 
-    l = list(ds["valid"])
+    l = list(ds["train"])
+    #l = list(ds["valid"])
     K = set([i["label"] for i in l])
     classes = {k:[] for k in K}
 
@@ -52,19 +53,20 @@ def load_imagenet(features=12288, nb_classes=200, size=10000):
         if len(np.reshape(img["image"],(-1,))) == 12288:
             classes[img["label"]].append(np.reshape(img["image"],(-1,)))
 
-    for i in range(len(list(classes.values())[0])):
+    for i in tqdm(range(len(list(classes.values())[0]))):
+        count = 0
         for k in classes:
             if i >= len(classes[k]):
                 break
             X.append(classes[k][i])
             y.append(k)
-            if len(X)>=size:
+            count += 1
+            if count >= nb_classes:
                 break
         if len(X)>=size:
-                break
+            break
     X = np.array(X)
     y = np.array(y)
-    
     pca = PCA(n_components=features)
     X = np.array([X[i] for i in range(len(X)) if y[i] in list(range(nb_classes))])
     y = np.array([y[i] for i in range(len(y)) if y[i] in list(range(nb_classes))])
@@ -163,21 +165,30 @@ def rbf_kernel(x,y,c):
 task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-#X,y = get_mnist(40,10,path="mnist1d.pkl")
+X,y = get_mnist(40,10,path="mnist1d.pkl")
 #X,y = get_mnist(40,10,path="../mnist.pkl")
-#X,y = imbalance(*get_mnist(40,2,path="../mnist1d.pkl"),0.1) # i features 2 classes
+#X,y = imbalance(*get_mnist(40,2,path="../mnist.pkl"),0.1) # i features 2 classes
+X,y = X[::2],y[::2]
+
+
 #task.add_data("MNIST-1D 0.9|0.1",X,y)
-#X,y = X[::7],y[::7]
-#task.add_data("MNIST-1D 0.5|0.5",X,y)
+task.add_data("MNIST-1D 0.5|0.5",X,y)
 
-X,y = load_imagenet(features=100, nb_classes=200, size=1000)
+#X,y = load_imagenet(features=10, nb_classes=10, size=2000)
+print(X.shape)
+#print(len(X))
 
-task.add_data("Mininet",X,y)
+#task.add_data("Mininet",X,y)
 
 ## CLASSIFIERS
-task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight="auto", device="cpu"))
-task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight="auto", device="cpu"))
+task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight_method="auto", device="cpu"))
+#task.add_clf("SVM linear",lambda :SVC(kernel="linear",class_weight="balanced"))
+task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="auto", device="cpu"))
+task.add_clf("KPGMC rbf opti fast",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="fast_optimize", device="cpu"))
+task.add_clf("KPGMC rbf opti",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device="cpu"))
 task.add_clf("SVM rbf",lambda :SVC())
+
+
 data = task.run()
 
 print(data.groupby(["data","clf"]).mean(numeric_only=False))

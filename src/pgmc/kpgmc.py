@@ -5,26 +5,61 @@ import sklearn as sk
 import torch
 from sklearn.base import ClassifierMixin, BaseEstimator
 
+import time
+
 from numba import jit
+import numba
 
 #from pgmc import embeddings
 import src.pgmc.embeddings as embeddings
 
+
+from torch.autograd import Variable
+
+
+def sqrtm_torch(A):
+    U, s, Vh = torch.linalg.svd(A)
+    s = torch.sqrt(s)
+    return U @ torch.diag(s) @ Vh
+
 @jit
-def dot(x,y):
+def dot(x,y,kernel_parameter):
     return np.dot(x,y)
 
-
+@jit
 def kernel_mat(kernel, X, kernel_parameter):
     Kernel_Matrix = np.zeros((len(X),len(X)),dtype=float)
     for i in range(len(X)):
         for j in range(i,len(X)):
-            if kernel_parameter == None:
-                Kernel_Matrix[i,j] = kernel(X[i],X[j])
-            else:
-                Kernel_Matrix[i,j] = kernel(X[i],X[j],kernel_parameter)
+            Kernel_Matrix[i,j] = kernel(X[i],X[j],kernel_parameter)
             Kernel_Matrix[j,i] = Kernel_Matrix[i,j]
     return Kernel_Matrix
+
+@jit
+def kernel_pred(kernel, embedding, kernel_parameter, X_train, X_pred, device):
+    ret = np.zeros((len(X_pred),len(X_train)))
+    for j in range(len(X_pred)):
+        for i in range(len(X_train)):
+            ret[j][i] = kernel(X_train[i],embedding(X_pred[j]),kernel_parameter)
+    #return np.array([[kernel(x,w,kernel_parameter) for x in X_train] for w in X_pred])
+    return ret
+
+
+def predict_proba_torch(W, T, device):
+    Wt = torch.tensor(W,device=device)
+    p1 = torch.tensordot(T,Wt,dims=([2], [1]))
+    p = torch.tensordot(p1,Wt,dims=([1], [1]))
+    p = torch.diagonal(p, offset=0, dim1=1, dim2=2)
+    return np.array(torch.transpose(p,0,1).cpu())
+
+@jit
+def predict_proba(W, T, device):
+    ret = np.zeros((len(W),len(T)))
+    for i in range(len(W)):
+        for j in range(len(T)):
+            ret[i][j] = W[i].T @ T[j] @ W[i]
+    return ret
+    #return np.array([[w.T() @ T[k] @ w for k in range(len(T))] for w in W])
 
 
 
@@ -34,7 +69,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
     The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
     This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
     """
-    def __init__(self, kernel=None, embedding=None, class_weight=None, kernel_parameter=None, device="cpu"):
+    def __init__(self, kernel=None, embedding=None, class_weight_method=None, kernel_parameter=None, device="cpu"):
         """ Initialisation of a new KPGMC
         Parameters:
             - kernel (function, default=None) : The kernel used to compute similarity between vectors (default is scalar product). A kernel with high values might cause the svd to diverge.
@@ -50,7 +85,8 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             A KPGMC classifier.
 
         """
-        self.class_weight = class_weight
+        self.class_weight = {}
+        self.class_weight_method = class_weight_method
         self.device = device
         self.kernel_parameter = kernel_parameter
 
@@ -70,48 +106,64 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         else:
             self.embedding = embedding
 
-        kernel_mat(self.kernel, np.array([[1.]]), self.kernel_parameter) # For JIT compilation
+        # For JIT compilation
+        X = np.array([[1.],[3.]])
+        y = np.array([0,1])
+        self.fit(X,y)
+        self.predict(X)
 
 
     def _adjust_class_weight(self):
         # Adjust class weights
-        if type(self.class_weight) == dict:
-            pass
-        elif self.class_weight == "auto":
+        if self.class_weight_method == "auto":
             self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
-        elif self.class_weight == "optimize":
-            self._optimize_class_weight()
+        elif self.class_weight_method == "fast_optimize":
+            self._optimize_class_weight_fast()
+        elif self.class_weight_method == "optimize":
+            self._optimize_class_weight_kfold()
         else:
             self.class_weight = {k:1. for k in self.K}
-
-        self.T = torch.tensor(np.array([self.class_weight[self.K[i]] * self.POVM[i] for i in range(len(self.K))]),device=self.device)
+        
 
     def _compute_matrices_pi(self):
         # Compute the matrix used for classification
-        """
-        self.Kernel_Matrix = np.zeros((len(self.X),len(self.X)),dtype=float)
-        for i in range(len(self.X)):
-            for j in range(i,len(self.X)):
-                self.Kernel_Matrix[i,j] = self.kernel(self.X[i],self.X[j])
-                self.Kernel_Matrix[j,i] = self.Kernel_Matrix[i,j]
-        """
-        self.Kernel_Matrix = kernel_mat(self.kernel, self.X, self.kernel_parameter)
-        Ginv = sp.linalg.sqrtm(torch.linalg.pinv(torch.tensor(self.Kernel_Matrix,device=self.device)).cpu())
+        self.Kernel_Matrix = torch.tensor(kernel_mat(self.kernel, self.X, self.kernel_parameter),device=self.device)
+        Ginv = sqrtm_torch(torch.linalg.pinv(self.Kernel_Matrix))
+        sigma = torch.tensor(np.array([np.diag([1. if i==k else 0. for i in self.y]) for k in self.K]), device = self.device)
         
-        self.POVM = []                                       
-        for k in self.K:
-            self.POVM.append(np.real(np.dot(Ginv,np.dot(np.diag([1. if i==k else 0. for i in self.y]),Ginv))))
+        self.POVM = torch.transpose(torch.tensordot(Ginv, torch.tensordot(sigma, Ginv, dims=([2], [0])), dims=([1], [1])),0,1)
 
-    def _optimize_class_weight(self):
+    def _optimize_class_weight_fast(self):
         # Optimization of the weights
         self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
-        V = np.array([[np.dot(np.dot(self.Kernel_Matrix[i].transpose(),self.POVM[k]),self.Kernel_Matrix[i]) for k in range(len(self.K))] for i in range(len(self.X))],dtype=float)
+        V = np.array(torch.transpose(torch.diagonal(torch.tensordot(torch.tensordot(self.POVM,self.Kernel_Matrix,dims=([2], [1])),self.Kernel_Matrix,dims=([1], [1])), offset=0, dim1=1, dim2=2),0,1).cpu())
         def f_(x):
-            P = copy.deepcopy(V)
-            for i in range(len(x)):
-                P[:,i] *= x[i]
-            y_pred = np.array([np.argmax(p) for p in P],dtype=float)
+            P = x * V
+            y_pred = np.array([self.K[np.argmax(p)] for p in P],dtype=float)
             return 1.- sk.metrics.f1_score(self.y,y_pred,average="binary" if len(self.K)==2 else "micro")
+        default = f_(np.array(list(self.class_weight.values())))
+        res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
+        self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
+
+
+    def _optimize_class_weight_kfold(self):
+        # Optimization of the weights
+        self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+        clf = KPGMC(kernel=self.kernel, embedding=self.embedding, class_weight_method=None, kernel_parameter=self.kernel_parameter, device=self.device)
+        V = []
+        y_true = []
+        rs = sk.model_selection.ShuffleSplit(n_splits=5, test_size=0.3, random_state=0)
+        for i, (train_index, test_index) in enumerate(rs.split(self.X)):
+            clf.fit(self.X[train_index],self.y[train_index])
+            V.append(clf._predict_proba(self.X[test_index]))
+            y_true.append(self.y[test_index])
+        V = np.concatenate(V)
+        y_true = np.concatenate(y_true)
+
+        def f_(x):
+            P = x * V
+            y_pred = np.array([self.K[np.argmax(p)] for p in P],dtype=float)
+            return 1.- sk.metrics.f1_score(y_true,y_pred,average="binary" if len(self.K)==2 else "micro")
         default = f_(np.array(list(self.class_weight.values())))
         res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="Nelder-Mead")
         self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
@@ -133,18 +185,19 @@ class KPGMC(BaseEstimator, ClassifierMixin):
 
         self._compute_matrices_pi()
         self._adjust_class_weight()
-        
-    def _predict_proba_one(self,w):
-        if self.kernel_parameter == None:
-            W = torch.tensor(np.array([self.kernel(x,w) for x in self.X],dtype=float),device=self.device)
-        else:
-            W = torch.tensor(np.array([self.kernel(x,w,self.kernel_parameter) for x in self.X],dtype=float),device=self.device)
-        p = torch.tensordot(W,torch.tensordot(self.T,W,dims=([2], [0])),dims=([0], [1]))
-        return np.array(p.cpu(),dtype=float)
 
-    def _predict_one(self, w):
-        i = np.argmax(self._predict_proba_one(w))
-        return self.K[i]
+
+    def _predict_proba(self, X):
+        weights = torch.tensor(list(self.class_weight.values()),device=self.device)
+        T = torch.einsum("i,klm->klm",weights,self.POVM)
+
+        W = torch.tensor(kernel_pred(self.kernel, self.embedding, self.kernel_parameter, self.X, X, self.device),device=self.device)
+
+        p = np.array(torch.transpose(torch.diagonal(torch.tensordot(torch.tensordot(self.POVM,W,dims=([2], [1])),W,dims=([1], [1])), offset=0, dim1=1, dim2=2),0,1).cpu())
+
+        p = np.array(list(self.class_weight.values())) * p
+        return p
+        
 
     def predict(self, X):
         """ Predict classes of sample X
@@ -154,7 +207,9 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             - y (numpy 1d array shape=(n,)) : classes predicted by the model
 
         """
-        return np.array(list(map(self._predict_one,np.array(list(map(self.embedding,X))))),dtype=float)
+        p = self._predict_proba(X)
+        y_pred = np.array([self.K[np.argmax(x)] for x in p])
+        return y_pred
         
     def predict_proba(self, X):
         """ Predict class probablities of sample X
@@ -164,4 +219,6 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             - Py (numpy 2d array sape=(n,d)) : Probability for each point of X to be in each class according to the model.
 
         """
-        return np.array(list(map(self._predict_proba_one,np.array(list(map(self.embedding,X))))),dtype=float)
+        p = self._predict_proba(X)
+        
+        return [{self.K[j]:p[i,j] for j in range(len(p))} for i in range(len(p))]
