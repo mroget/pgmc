@@ -1,4 +1,5 @@
 from src.pgmc import kpgmc
+from src.pgmc import pgmc
 from src.pgmc import embeddings
 
 from numba import jit
@@ -165,10 +166,10 @@ def rbf_kernel(x,y,c):
 task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-X,y = get_mnist(40,10,path="mnist1d.pkl")
-#X,y = get_mnist(40,10,path="../mnist.pkl")
+#X,y = get_mnist(40,10,path="mnist1d.pkl")
+X,y = get_mnist(200,10,path="../mnist.pkl")
 #X,y = imbalance(*get_mnist(40,2,path="../mnist.pkl"),0.1) # i features 2 classes
-X,y = X[::2],y[::2]
+X,y = X[::10],y[::10]
 
 
 #task.add_data("MNIST-1D 0.9|0.1",X,y)
@@ -180,13 +181,16 @@ print(X.shape)
 
 #task.add_data("Mininet",X,y)
 
+device = "cpu"
+
 ## CLASSIFIERS
-task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight_method="auto", device="cpu"))
-#task.add_clf("SVM linear",lambda :SVC(kernel="linear",class_weight="balanced"))
-task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="auto", device="cpu"))
-task.add_clf("KPGMC rbf opti fast",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="fast_optimize", device="cpu"))
-task.add_clf("KPGMC rbf opti",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device="cpu"))
-task.add_clf("SVM rbf",lambda :SVC())
+#task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight_method="auto", device=device))
+task.add_clf("PGMC ortho",lambda :pgmc.PGMC(embedding="orthogonal",class_weight_method="auto"))
+#task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="auto", device=device))
+#task.add_clf("KPGMC rbf opti fast",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="fast_optimize", device=device))
+#task.add_clf("KPGMC rbf opti",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device=device))
+#task.add_clf("KPGMC ortho rbf opti",lambda :kpgmc.KPGMC(embedding="orthogonal",kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device=device))
+#task.add_clf("SVM rbf",lambda :SVC())
 
 
 data = task.run()

@@ -2,11 +2,15 @@ import numpy as np
 from numba import jit
 
 @jit
+def norm(x):
+    return np.sqrt(sum([i**2 for i in x]))
+
+@jit
 def normalize(x):
     """
     Amplitude embedding or simply a normalization.
     """
-    return x/np.linalg.norm(x)
+    return x/norm(x)
 
 @jit
 def stereo(x):
