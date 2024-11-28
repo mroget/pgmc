@@ -4,6 +4,7 @@ import copy
 import sklearn as sk
 import torch
 from sklearn.base import ClassifierMixin, BaseEstimator
+from multiprocess import Pool
 
 import time
 
@@ -13,12 +14,26 @@ import numba
 #from pgmc import embeddings
 import src.pgmc.embeddings as embeddings
 
-@jit
-def _get_rho_jit(x):
-    y = np.reshape(x,(len(x),1))
-    return (y @ y.T)/sum([i**2 for i in x])
+@jit(nopython=True)
+def sqrtm_jit(A):
+    U, s, Vh = np.linalg.svd(A)
+    s = np.sqrt(s)
+    return U @ np.diag(s) @ Vh
 
-@jit
+@jit(nopython=True)
+def _get_rho_jit(x):
+    """
+    mat = np.zeros((len(x),len(x)),dtype=np.float64)
+    for i in range(len(x)):
+        for j in range(len(x)):
+            mat[i,j] = x[i]*x[j]
+    return mat / sum([i**2 for i in x])
+    """
+    #x = np.ascontiguousarray(x)
+    y = np.reshape(x,(len(x),1))
+    return (y @ y.T)
+
+@jit(nopython=True)
 def _embed_jit(X, embedding):
     ret = np.zeros(X.shape)
     for i in range(len(X)):
@@ -29,42 +44,72 @@ def _embed_jit(X, embedding):
         for j in range(len(ret[i])):
             ret[i,j] = tmp[j]
     return ret
-
-@jit
+"""
+@jit(nopython=True)
 def _barycentre(X):
     assert(len(X)>0)
     rho = np.zeros((len(X[0]),len(X[0])),dtype=np.float64)
     for x in X:
         rho = rho + _get_rho_jit(x)
     return rho / len(X)
-
-
-def _pgmc_fit_jit(X, y, K, p):
-    sizes = [0 for i in range(len(K))]
+"""
+@jit(nopython=True)
+def _group_by_jit(X,y):
+    sizes = [0 for i in range(len(set(y)))]
     dim = len(X[0])
     for i in y:
-        sizes[K.index(i)]+=1
-    data = [np.zeros((sizes[i],dim),dtype=np.float64) for i in range(len(K))]
-    counters = [0 for i in range(len(K))]
+        sizes[i]+=1
+    data = [np.zeros((sizes[i],dim),dtype=np.float64) for i in range(len(sizes))]
+    counters = [0 for i in range(len(sizes))]
     for i in range(len(X)):
-        k = K.index(y[i])
-        data[k][counters[k]] = X[i]
+        k = y[i]
+        data[k][counters[k]] = X[i]/sum([val**2 for val in X[i]])
         counters[k]+=1
+    return data
+
+def _barycentre(X):
+    assert(len(X)>0)
+    return np.einsum("li,lj -> ij",X,X)/len(X)
+
+
+def _get_rho_k_jit(data, dim):
     rho_k = np.zeros((len(data),dim,dim),dtype=np.float64)
     for i in range(len(data)):
         rho_k[i]  = _barycentre(data[i])
-    rho = np.sum(rho_k * np.reshape(p,(len(p),1,1)) ,axis=0)
-    rho = sp.linalg.sqrtm(np.linalg.pinv(rho))
+    return rho_k
 
-    E = [p[i] * rho @ rho_k[i] @ rho for i in range(len(K))]
+
+
+def sqrtm_inv_numpy(A):
+    U, s, Vh = torch.linalg.svd(A)
+    s = 1./np.sqrt(s)
+    return U @ torch.diag(s) @ Vh
+
+def _pgmc_fit_numpy(data, p):
+    p = torch.tensor(p)
+    rho_k = []
+    for X in data:
+        rho_k.append(np.einsum("li,lj -> ij",X,X)/len(X))
+    rho_k = torch.tensor(np.array(rho_k))
+    rho = torch.einsum("k,kij -> ij", p, rho_k)
+    rho = sqrtm_inv_numpy(rho)
+
+    E = torch.einsum("k,il,klm,mj -> kij", p, rho, rho_k, rho)
     return E
 
-def _pgmc_proba_jit(X, E, K):
-    proba = []
-    for x in X:
-        rho = _get_rho_jit(x)
-        proba.append([np.trace(E[i] @ rho) for i in range(len(E))])
-    return np.array(proba)
+def _pgmc_proba_numpy(X, E):
+    X_ = torch.tensor(X)
+    rho = torch.einsum("li,lj -> lij",X_,X_)
+    proba = torch.einsum("kij,nij -> nk", E, rho)
+    return proba
+
+
+def _pgmc_fit(X, y, K, p):
+    dim = len(X[0])
+    dic = {K[i]:i for i in range(len(K))}
+    y_ = np.array([dic[i] for i in y])
+    data = _group_by_jit(X,y_)
+    return _pgmc_fit_numpy(data, p)
 
 
 
@@ -74,7 +119,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
     The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
     This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
     """
-    def __init__(self, embedding=None, class_weight_method=None, class_weight=None, copies=1):
+    def __init__(self, embedding=None, class_weight_method=None, class_weight=None, copies=1, device = "cpu"):
         """ Initialisation of a new KPGMC
         Parameters:
             - kernel (function, default=None) : The kernel used to compute similarity between vectors (default is scalar product). A kernel with high values might cause the svd to diverge.
@@ -93,6 +138,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
         self.class_weight = {}
         self.copies = copies
         self.class_weight_method = class_weight_method
+        self.device=device
 
         if embedding==None:
             self.embedding = embeddings.normalize
@@ -107,7 +153,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
 
         
         # For JIT compilation
-        X = np.array([[1.],[3.]])
+        X = np.array([[1.,1.],[3.,2.]])
         y = np.array([0,1])
         self.fit(X,y)
         self.predict(X)
@@ -181,14 +227,36 @@ class PGMC(BaseEstimator, ClassifierMixin):
         self.X = _embed_jit(X, self.embedding)
         self.y = copy.deepcopy(y)
 
+        # Group by class
+        dim = len(self.X[0])
+        dic = {self.K[i]:i for i in range(len(self.K))}
+        y_ = np.array([dic[i] for i in self.y])
+        data = _group_by_jit(self.X,y_)
+
+        # class weights
         if class_weight == None:
             self._adjust_class_weight()
         else:
             self.class_weight = class_weight
 
         p = np.array([self.class_weight[self.K[i]] for i in range(len(self.K))],dtype=np.float64)
-        self.E = _pgmc_fit_jit(self.X, self.y, self.K, p)
         
+        # Fit
+        p = torch.tensor(p, device=self.device)
+        rho_k = []
+        for X in data:
+            rho_k.append(np.einsum("li,lj -> ij",X,X)/len(X))
+        rho_k = torch.tensor(np.array(rho_k), device=self.device)
+        rho = torch.einsum("k,kij -> ij", p, rho_k)
+        rho = sqrtm_inv_numpy(rho)
+
+        self.E = torch.einsum("k,il,klm,mj -> kij", p, rho, rho_k, rho)
+
+    def _predict_proba(self, X):
+        X_ = torch.tensor(_embed_jit(X, self.embedding), device=self.device)
+        rho = torch.einsum("li,lj -> lij",X_,X_)
+        proba = torch.einsum("kij,nij -> nk", self.E, rho)
+        return proba
         
     def predict(self, X):
         """ Predict classes of sample X
@@ -198,7 +266,10 @@ class PGMC(BaseEstimator, ClassifierMixin):
             - y (numpy 1d array shape=(n,)) : classes predicted by the model
 
         """
-        p = _pgmc_proba_jit(_embed_jit(X, self.embedding), self.E, self.K)
+        t = time.time()
+        p = self._predict_proba(X)
+        t = time.time() - t
+        print("predict", t)
         y_pred = np.array([self.K[np.argmax(x)] for x in p])
         return y_pred
         
@@ -210,6 +281,6 @@ class PGMC(BaseEstimator, ClassifierMixin):
             - Py (numpy 2d array sape=(n,d)) : Probability for each point of X to be in each class according to the model.
 
         """
-        p = _pgmc_proba_jit(_embed_jit(X, self.embedding), self.E, self.K)
+        p = self._predict_proba(X)
         
         return [{self.K[j]:p[i,j] for j in range(len(p[i]))} for i in range(len(p))]
