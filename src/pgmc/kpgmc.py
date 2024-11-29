@@ -69,6 +69,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             - class_weight (dict or str, default None) : The method to choose the classes's weights. By default, all classes have weight 1. A dictionnary {class : weight} is accepted.
                 + "auto" : Raisonnable weights are chosen according to some formula. Fast but not optimal.
                 + "optimize" : The weight are optimized on the training dataset (for faster computation) using Nelder-Mead method.
+            - kernel_parameter (float, default=None) : the parameter to pass to the kernel function.
             - device (str, default="cpu") : the device on which pytorch run the pinv. For gpu computation, specify "cuda" instead.  
         Return:
             A KPGMC classifier.
@@ -205,7 +206,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         Parameter:
             - X (numpy 2d array shape=(n,d)) : sample to classify
         Return:
-            - Py (numpy 2d array sape=(n,d)) : Probability for each point of X to be in each class according to the model.
+            - Py (list of dictionnaries of size n) : Probability for each point of X to be in each class according to the model.
 
         """
         p = self._predict_proba(X)
