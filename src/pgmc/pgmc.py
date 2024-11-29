@@ -15,13 +15,11 @@ from pgmc import embeddings
 
 @jit(nopython=True)
 def _embed_jit(X, embedding):
-    ret = np.zeros(X.shape)
-    for i in range(len(X)):
-        for j in range(len(X[i])):
-            ret[i,j] = X[i,j]
+    d = len(embedding(X[0]))
+    ret = np.zeros((len(X), d))
     for i in range(len(ret)):
-        tmp = embedding(ret[i])
-        for j in range(len(ret[i])):
+        tmp = embedding(X[i])
+        for j in range(len(tmp)):
             ret[i,j] = tmp[j]
     return ret
 
@@ -35,7 +33,7 @@ def _group_by_jit(X,y):
     counters = [0 for i in range(len(sizes))]
     for i in range(len(X)):
         k = y[i]
-        data[k][counters[k]] = X[i]/sum([val**2 for val in X[i]])
+        data[k][counters[k]] = X[i]
         counters[k]+=1
     return data
 
@@ -51,7 +49,7 @@ def kron_power(A, n):
             ret = np.kron(ret,mat[i])
     return ret
 
-def sqrtm_inv_numpy(A):
+def sqrtm_inv_torch(A):
     U, s, Vh = torch.linalg.svd(A)
     s = 1./np.sqrt(s)
     return U @ torch.diag(s) @ Vh
@@ -63,7 +61,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
     The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
     This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
     """
-    def __init__(self, embedding=None, class_weight_method=None, class_weight=None, copies=1, device = "cpu"):
+    def __init__(self, embedding=None, class_weight_method=None, copies=1, device = "cpu"):
         """ Initialisation of a new KPGMC
         Parameters:
             - embedding (str or function, default=None) : The embedding method (default is normalization). 
@@ -106,11 +104,16 @@ class PGMC(BaseEstimator, ClassifierMixin):
     def _adjust_class_weight(self):
         # Adjust class weights
         if self.class_weight_method == "auto":
-            self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+            if len(self.K) == 2:
+                self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+            else:
+                self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
+        elif self.class_weight_method == "proportional":
+            self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
         elif self.class_weight_method == "optimize":
             self._optimize_class_weight_kfold()
         else:
-            self.class_weight = {k:1. for k in self.K}
+            self.class_weight = {k:1./len(self.K) for k in self.K}
         
     def _optimize_class_weight_kfold(self):
         # Optimization of the weights
@@ -129,7 +132,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
             y_true = []
             y_pred = []
             for i, (train_index, test_index) in enumerate(rs.split(self.X)):
-                clf.fit(self.X[train_index],self.y[train_index],class_weight={self.K[i]:x[i] for i in range(len(self.K))})
+                clf.fit(self.X[train_index],self.y[train_index],class_weights={self.K[i]:x[i] for i in range(len(self.K))})
                 y_pred.append(clf.predict(self.X[test_index]))
                 y_true.append(self.y[test_index])
             y_true = np.concatenate(y_true)
@@ -169,7 +172,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
         data = _group_by_jit(self.X,y_)
 
         # class weights
-        if class_weight == None:
+        if class_weights == None:
             self._adjust_class_weight()
         else:
             self.class_weight = class_weights
@@ -180,15 +183,14 @@ class PGMC(BaseEstimator, ClassifierMixin):
         p = torch.tensor(p, device=self.device)
         rho_k = []
         for X in data:
-            rho_k.append(kron_power(np.einsum("li,lj -> ij",X,X)/len(X), self.copies))
+            rho_k.append(kron_power(np.einsum("li,lj -> ij",X,X), self.copies))
         rho_k = torch.tensor(np.array(rho_k), device=self.device)
         rho = torch.einsum("k,kij -> ij", p, rho_k)
-        rho = sqrtm_inv_numpy(rho)
-
+        rho = sqrtm_inv_torch(rho)
         self.E = torch.einsum("k,il,klm,mj -> kij", p, rho, rho_k, rho)
 
     def _predict_proba(self, X):
-        X_ = torch.tensor(kron_power(_embed_jit(X, self.embedding), self.copies), device=self.device)
+        X_ = torch.tensor(_embed_jit(X, self.embedding), device=self.device)
         rho = torch.einsum("li,lj -> lij",X_,X_)
         proba = torch.einsum("kij,nji -> nk", self.E, rho)
         return proba

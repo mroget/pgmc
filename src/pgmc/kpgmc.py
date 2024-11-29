@@ -21,25 +21,24 @@ def sqrtm_torch(A):
     return U @ torch.diag(s) @ Vh
 
 @jit
-def dot(x,y,kernel_parameter):
+def dot(x,y):
     return np.dot(x,y)
 
 @jit
-def kernel_mat(kernel, X, kernel_parameter):
-    Kernel_Matrix = np.zeros((len(X),len(X)),dtype=float)
+def kernel_mat(kernel, X):
+    Kernel_Matrix = np.zeros((len(X),len(X)),dtype=np.float64)
     for i in range(len(X)):
         for j in range(i,len(X)):
-            Kernel_Matrix[i,j] = kernel(X[i],X[j],kernel_parameter)
+            Kernel_Matrix[i,j] = kernel(X[i],X[j])
             Kernel_Matrix[j,i] = Kernel_Matrix[i,j]
     return Kernel_Matrix
 
 @jit
-def kernel_pred(kernel, embedding, kernel_parameter, X_train, X_pred, device):
-    ret = np.zeros((len(X_pred),len(X_train)))
+def kernel_pred(kernel, embedding, X_train, X_pred, device):
+    ret = np.zeros((len(X_pred),len(X_train)),dtype=np.float64)
     for j in range(len(X_pred)):
         for i in range(len(X_train)):
-            ret[j][i] = kernel(X_train[i],embedding(X_pred[j]),kernel_parameter)
-    #return np.array([[kernel(x,w,kernel_parameter) for x in X_train] for w in X_pred])
+            ret[j][i] = kernel(X_train[i],embedding(X_pred[j]))
     return ret
 
 
@@ -58,7 +57,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
     The pseudo inverse (necessary for the K-PGMC) use pytorch subroutine. If you wish to run it on cuda it is possible by specifying the device.
     This class is sklearn compliant and can be used with sklearn functions like k-fold crossvalidation or pipeline.
     """
-    def __init__(self, kernel=None, embedding=None, class_weight_method=None, kernel_parameter=None, device="cpu"):
+    def __init__(self, kernel=None, embedding=None, class_weight_method=None, device="cpu"):
         """ Initialisation of a new KPGMC
         Parameters:
             - kernel (function, default=None) : The kernel used to compute similarity between vectors (default is scalar product). A kernel with high values might cause the svd to diverge.
@@ -69,7 +68,6 @@ class KPGMC(BaseEstimator, ClassifierMixin):
             - class_weight (dict or str, default None) : The method to choose the classes's weights. By default, all classes have weight 1. A dictionnary {class : weight} is accepted.
                 + "auto" : Raisonnable weights are chosen according to some formula. Fast but not optimal.
                 + "optimize" : The weight are optimized on the training dataset (for faster computation) using Nelder-Mead method.
-            - kernel_parameter (float, default=None) : the parameter to pass to the kernel function.
             - device (str, default="cpu") : the device on which pytorch run the pinv. For gpu computation, specify "cuda" instead.  
         Return:
             A KPGMC classifier.
@@ -78,7 +76,6 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         self.class_weight = {}
         self.class_weight_method = class_weight_method
         self.device = device
-        self.kernel_parameter = kernel_parameter
 
         if kernel==None:
             self.kernel = dot
@@ -106,7 +103,12 @@ class KPGMC(BaseEstimator, ClassifierMixin):
     def _adjust_class_weight(self):
         # Adjust class weights
         if self.class_weight_method == "auto":
-            self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+            if len(self.K) == 2:
+                self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+            else:
+                self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
+        elif self.class_weight_method == "proportional":
+            self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
         elif self.class_weight_method == "fast_optimize":
             self._optimize_class_weight_fast()
         elif self.class_weight_method == "optimize":
@@ -117,7 +119,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
 
     def _compute_matrices_pi(self):
         # Compute the matrix used for classification
-        self.Kernel_Matrix = torch.tensor(kernel_mat(self.kernel, self.X, self.kernel_parameter),device=self.device)
+        self.Kernel_Matrix = torch.tensor(kernel_mat(self.kernel, self.X),device=self.device)
         Ginv = sqrtm_torch(torch.linalg.pinv(self.Kernel_Matrix))
         sigma = torch.tensor(np.array([np.diag([1. if i==k else 0. for i in self.y]) for k in self.K]), device = self.device)
         
@@ -139,7 +141,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
     def _optimize_class_weight_kfold(self):
         # Optimization of the weights
         self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
-        clf = KPGMC(kernel=self.kernel, embedding=self.embedding, class_weight_method=None, kernel_parameter=self.kernel_parameter, device=self.device)
+        clf = KPGMC(kernel=self.kernel, embedding=self.embedding, class_weight_method=None, device=self.device)
         V = []
         y_true = []
         rs = sk.model_selection.ShuffleSplit(n_splits=5, test_size=0.3, random_state=0)
@@ -181,7 +183,7 @@ class KPGMC(BaseEstimator, ClassifierMixin):
         weights = torch.tensor(list(self.class_weight.values()),device=self.device)
         T = torch.einsum("i,klm->klm",weights,self.POVM)
 
-        W = torch.tensor(kernel_pred(self.kernel, self.embedding, self.kernel_parameter, self.X, X, self.device),device=self.device)
+        W = torch.tensor(kernel_pred(self.kernel, self.embedding, self.X, X, self.device),device=self.device)
 
         p = np.array(torch.transpose(torch.diagonal(torch.tensordot(torch.tensordot(self.POVM,W,dims=([2], [1])),W,dims=([1], [1])), offset=0, dim1=1, dim2=2),0,1).cpu())
 
