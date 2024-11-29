@@ -1,2 +1,2 @@
-from kpgmc import KPGMC
-from pgmc import PGMC
+from pgmc.kpgmc import KPGMC
+from pgmc.pgmc import PGMC

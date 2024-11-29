@@ -10,8 +10,8 @@ import time
 from numba import jit
 import numba
 
-#from pgmc import embeddings
-import src.pgmc.embeddings as embeddings
+from pgmc import embeddings
+#import src.pgmc.embeddings as embeddings
 
 
 
