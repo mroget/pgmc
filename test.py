@@ -20,12 +20,30 @@ import sklearn as sk
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.svm import LinearSVC
+from sklearn.linear_model import Perceptron
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
 from sklearn import datasets
 from sklearn.multiclass import OneVsOneClassifier,OneVsRestClassifier
 
 from sklearn.model_selection import RandomizedSearchCV
+
+
+def get_iris():
+    """
+    Load Iris with some restrictions.
+    """
+    iris = datasets.load_iris()
+    X_ = iris.data[:,:2]
+    Y_ = iris.target
+    X = np.array([X_[i]+np.array([0,3.3]) for i in range(len(X_)) if Y_[i] != 2])
+    y = np.array([1 if i==0 else 0 for i in Y_ if i != 2])
+    size_max = max([np.sqrt(sum(x**2)) for x in X])
+    X = np.array([[i/size_max for i in x] for x in X],dtype=float)
+    
+    u = sum(X)/len(X)
+    X = X-u + np.array([0.013,0.])
+    return X,y
 
 def get_mnist(features=5, nb_classes=2, path="mnist.pkl"):
     """
@@ -140,12 +158,14 @@ class Task:
         self.clf.append((name,clf))
 
     def run_aux(self,clf,X_train,y_train,X_test,y_test):
-        T = time.time()
+        T1 = time.time()
         clf.fit(X_train,y_train)
-        T = time.time() - T
+        T1 = time.time() - T1
+        T2 = time.time()
         y_pred = clf.predict(X_test)
+        T2 = time.time() - T2
         l = metrics(y_test,y_pred,silent=True,average="binary" if len(set(y_test))==2 else "micro")
-        return [len(y_train),len(X_train[0])]+l[0:6]+[T]
+        return [len(y_train),len(y_pred),len(X_train[0])]+l[0:6]+[T1,T2]
 
     def run(self):
         res = []
@@ -153,11 +173,11 @@ class Task:
                 rs = sk.model_selection.ShuffleSplit(n_splits=repeat, test_size=0.3, random_state=0)
                 for i, (train_index, test_index) in tqdm(enumerate(rs.split(X)),total=repeat,desc=f"{repeat}-fold CrossValidation of {name_clf} on {name_data}",leave=False):
                     res.append(self.run_aux(clf(),X[train_index],y[train_index],X[test_index],y[test_index])+[name_clf,name_data])
-        return pd.DataFrame(res,columns=["size","features","acc","precision","recall","ba","mse","f1","time","clf","data"])
+        return pd.DataFrame(res,columns=["training_size","testing_size","features","acc","precision","recall","ba","mse","f1","fit_time", "predict_time","clf","data"])
 
 @jit
-def rbf_kernel(x,y,c):
-    return np.exp(-c*np.linalg.norm(x-y)**2)
+def rbf_kernel(x,y):
+    return np.exp(-np.linalg.norm(x-y)**2)
 
 
 #rbf_kernel(np.array([1.,1.]), np.array([1.,1.]))
@@ -166,31 +186,40 @@ def rbf_kernel(x,y,c):
 task = Task(repeat=5) # 5-fold crossvalidation
 
 ## DATASETS
-#X,y = get_mnist(40,10,path="mnist1d.pkl")
-X,y = get_mnist(200,10,path="../mnist.pkl")
-#X,y = imbalance(*get_mnist(40,2,path="../mnist.pkl"),0.1) # i features 2 classes
+X,y = get_mnist(40,10,path="mnist1d.pkl")
 X,y = X[::10],y[::10]
+#task.add_data("MNIST-1D 0.5|0.5",X,y)
 
+#X,y = get_iris()
 
+X,y = imbalance(*get_mnist(40,2,path="../mnist1d.pkl"),0.1) # i features 2 classes
+X,y = X[::1],y[::1]
 #task.add_data("MNIST-1D 0.9|0.1",X,y)
-task.add_data("MNIST-1D 0.5|0.5",X,y)
 
-#X,y = load_imagenet(features=10, nb_classes=10, size=2000)
-print(X.shape)
-#print(len(X))
 
-#task.add_data("Mininet",X,y)
+X,y = load_imagenet(features=10, nb_classes=10, size=5000)
+task.add_data("Mininet",X,y)
+
+
 
 device = "cpu"
 
 ## CLASSIFIERS
+
 #task.add_clf("KPGMC ortho",lambda :kpgmc.KPGMC(embedding="orthogonal",class_weight_method="auto", device=device))
-task.add_clf("PGMC ortho",lambda :pgmc.PGMC(embedding="orthogonal",class_weight_method="auto"))
+
+#task.add_clf("PGMC normal",lambda :pgmc.PGMC(embedding="normal",class_weight_method="auto"))
+task.add_clf("PGMC ortho",lambda :pgmc.PGMC(embedding="orthogonal",class_weight_method="auto", device=device))
+#task.add_clf("PGMC stereo",lambda :pgmc.PGMC(embedding="stereo",class_weight_method="auto"))
+
 #task.add_clf("KPGMC rbf",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="auto", device=device))
 #task.add_clf("KPGMC rbf opti fast",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="fast_optimize", device=device))
 #task.add_clf("KPGMC rbf opti",lambda :kpgmc.KPGMC(kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device=device))
 #task.add_clf("KPGMC ortho rbf opti",lambda :kpgmc.KPGMC(embedding="orthogonal",kernel=rbf_kernel, kernel_parameter=2, class_weight_method="optimize", device=device))
-#task.add_clf("SVM rbf",lambda :SVC())
+task.add_clf("SVM rbf",lambda :SVC())
+#task.add_clf("SVM linear",lambda :SVC(kernel="linear"))
+task.add_clf("Perceptron",lambda :Perceptron())
+task.add_clf("Tree",lambda :DecisionTreeClassifier())
 
 
 data = task.run()
