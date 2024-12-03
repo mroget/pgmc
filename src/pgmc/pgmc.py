@@ -68,8 +68,9 @@ class PGMC(BaseEstimator, ClassifierMixin):
                 + "normal" : Normalization of the vectors.
                 + "stereo" : Inverse stereoscopic embedding.
                 + "orthogonal" : Vectors are normalized, then a new features of value -1 is added, then the vectors are normalized again.
-            - class_weight (dict or str, default None) : The method to choose the classes's weights. By default, all classes have weight 1. A dictionnary {class : weight} is accepted.
-                + "auto" : Raisonnable weights are chosen according to some formula. Fast but not optimal.
+            - class_weight_method (dict or str, default None) : The method to choose the classes's weights. By default, all classes have weight 1. A dictionnary {class : weight} is accepted.
+                + "proportional" : Set a weight proportional to the presence of each class in the training dataset.
+                + "auto" : Raisonnable weights are chosen according to some formula for binary dataset. Proportional weights are chosen for more than two classes.
                 + "optimize" : The weight are optimized on the training dataset (for faster computation) using Nelder-Mead method.
             - device (str, default="cpu") : the device on which pytorch run the pinv. For gpu computation, specify "cuda" instead. 
             - copies (int, default=1) : the number of copies (increases the running time and memory usage greatly).
@@ -100,24 +101,27 @@ class PGMC(BaseEstimator, ClassifierMixin):
         self.fit(X,y)
         self.predict(X)
 
+        self.fitted = False
+        self.classes_ = None
+
 
     def _adjust_class_weight(self):
         # Adjust class weights
         if self.class_weight_method == "auto":
-            if len(self.K) == 2:
-                self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+            if len(self.classes_) == 2:
+                self.class_weight = {k: min(max(2/len(self.classes_)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.classes_}
             else:
-                self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
+                self.class_weight = {k: 1/list(self.y).count(k) for k in self.classes_}
         elif self.class_weight_method == "proportional":
-            self.class_weight = {k: 1/list(self.y).count(k) for k in self.K}
+            self.class_weight = {k: 1/list(self.y).count(k) for k in self.classes_}
         elif self.class_weight_method == "optimize":
             self._optimize_class_weight_kfold()
         else:
-            self.class_weight = {k:1./len(self.K) for k in self.K}
+            self.class_weight = {k:1./len(self.classes_) for k in self.classes_}
         
     def _optimize_class_weight_kfold(self):
         # Optimization of the weights
-        self.class_weight = {k: min(max(2/len(self.K)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.K}
+        self.class_weight = {k: min(max(2/len(self.classes_)- list(self.y).count(k)/len(self.y),0.15),0.85) for k in self.classes_}
         clf = PGMC(embedding=self.embedding, class_weight_method=None, device=self.device)
         V = []
         y_true = []
@@ -132,15 +136,15 @@ class PGMC(BaseEstimator, ClassifierMixin):
             y_true = []
             y_pred = []
             for i, (train_index, test_index) in enumerate(rs.split(self.X)):
-                clf.fit(self.X[train_index],self.y[train_index],class_weights={self.K[i]:x[i] for i in range(len(self.K))})
+                clf.fit(self.X[train_index],self.y[train_index],class_weights={self.classes_[i]:x[i] for i in range(len(self.classes_))})
                 y_pred.append(clf.predict(self.X[test_index]))
                 y_true.append(self.y[test_index])
             y_true = np.concatenate(y_true)
             y_pred = np.concatenate(y_pred)
-            return 1.- sk.metrics.f1_score(y_true,y_pred,average="binary" if len(self.K)==2 else "micro")
+            return 1.- sk.metrics.f1_score(y_true,y_pred,average="binary" if len(self.classes_)==2 else "micro")
         default = f_(np.array(list(self.class_weight.values())))
-        res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.K),method="L-BFGS-B")
-        self.class_weight = {self.K[i]:res.x[i] for i in range(len(self.K))}
+        res = sp.optimize.minimize(f_,np.array(list(self.class_weight.values())),bounds=[(0,1)]*len(self.classes_),method="L-BFGS-B")
+        self.class_weight = {self.classes_[i]:res.x[i] for i in range(len(self.classes_))}
         
         
 
@@ -161,13 +165,13 @@ class PGMC(BaseEstimator, ClassifierMixin):
         """
         assert(len(X)==len(y))
 
-        self.K = list(set(y)) # Classes
+        self.classes_ = list(set(y)) # Classes
         self.X = _embed_jit(X, self.embedding)
         self.y = copy.deepcopy(y)
 
         # Group by class
         dim = len(self.X[0])
-        dic = {self.K[i]:i for i in range(len(self.K))}
+        dic = {self.classes_[i]:i for i in range(len(self.classes_))}
         y_ = np.array([dic[i] for i in self.y])
         data = _group_by_jit(self.X,y_)
 
@@ -177,7 +181,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
         else:
             self.class_weight = class_weights
 
-        p = np.array([self.class_weight[self.K[i]] for i in range(len(self.K))],dtype=np.float64)
+        p = np.array([self.class_weight[self.classes_[i]] for i in range(len(self.classes_))],dtype=np.float64)
         
         # Fit
         p = torch.tensor(p, device=self.device)
@@ -189,7 +193,13 @@ class PGMC(BaseEstimator, ClassifierMixin):
         rho = sqrtm_inv_torch(rho)
         self.E = torch.einsum("k,il,klm,mj -> kij", p, rho, rho_k, rho)
 
+        self.fitted = True
+
     def _predict_proba(self, X):
+        if self.fitted == False or self.classes_==None:
+            raise sk.exceptions.NotFittedError
+
+
         X_ = torch.tensor(_embed_jit(X, self.embedding), device=self.device)
         rho = torch.einsum("li,lj -> lij",X_,X_)
         proba = torch.einsum("kij,nji -> nk", self.E, rho)
@@ -204,7 +214,7 @@ class PGMC(BaseEstimator, ClassifierMixin):
 
         """
         p = self._predict_proba(X)
-        y_pred = np.array([self.K[np.argmax(x)] for x in p])
+        y_pred = np.array([self.classes_[np.argmax(x)] for x in p])
         return y_pred
         
     def predict_proba(self, X):
@@ -212,9 +222,9 @@ class PGMC(BaseEstimator, ClassifierMixin):
         Parameter:
             - X (numpy 2d array shape=(n,d)) : sample to classify
         Return:
-            - Py (list of dictionnaries of size n) : Probability for each point of X to be in each class according to the model.
+            - Py (numpy 2d array shape=(n,k)) : Probability for each point of X to be in each class according to the model. For one point, the classes are sorted using `self.classes_`.
 
         """
         p = self._predict_proba(X)
         
-        return [{self.K[j]:p[i,j] for j in range(len(p[i]))} for i in range(len(p))]
+        return p
