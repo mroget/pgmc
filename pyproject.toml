@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pgmc"
-version = "0.0.5"
+version = "0.0.6"
 authors = [
   { name="Mathieu Roget", email="mathieu.roget@lis-lab.fr" },
 ]
@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = ["numpy>=1.23.5", "pandas>=1.5.1", "matplotlib>=3.5.1", "scipy>=1.10.1", "tqdm>=4.64.1", "scikit-learn>=0.23.2", "torch>=2.0.1", "numba>=0.60.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/mroget/pgmc"
